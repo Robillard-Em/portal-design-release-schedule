@@ -1,6 +1,7 @@
 (() => {
   const STORAGE_KEY = "portal-design-release-schedule-v1";
-  const WEEK_PX = 168;
+  const WEEK_PX = 84;
+  const LABEL_W = 228;
   const SECTIONS = [
     { id: "immediate", label: "Immediate Priorities" },
     { id: "explorations", label: "Explorations" },
@@ -15,7 +16,6 @@
   const els = {
     board: document.getElementById("board"),
     nowCard: document.getElementById("now-card"),
-    topbarMeta: document.getElementById("topbar-meta"),
     designerFilter: document.getElementById("designer-filter"),
     drawer: document.getElementById("drawer"),
     backdrop: document.getElementById("drawer-backdrop"),
@@ -91,7 +91,7 @@
   function formatWeekLabel(monday) {
     const friday = addDays(monday, 4);
     if (monday.getMonth() === friday.getMonth()) {
-      return `${monthDay(monday)}–${friday.getDate()}`;
+      return `${shortMonthDay(monday)}–${friday.getDate()}`;
     }
     return `${shortMonthDay(monday)}–${shortMonthDay(friday)}`;
   }
@@ -128,31 +128,22 @@
   }
 
   function buildWeeks() {
-    const dates = allDates();
-    let start = startOfWeek(dates.reduce((a, b) => (a < b ? a : b)));
-    const end = startOfWeek(dates.reduce((a, b) => (a > b ? a : b)));
     const weeks = [];
-    for (let cursor = new Date(start); cursor <= end; cursor = addDays(cursor, 7)) {
+    for (let cursor = parseDate(TIMELINE_START); cursor < parseDate("2027-01-01"); cursor = addDays(cursor, 7)) {
       weeks.push(new Date(cursor));
-    }
-    if (weeks.length < 7) {
-      while (weeks.length < 7) weeks.push(addDays(weeks[weeks.length - 1], 7));
     }
     return weeks;
   }
 
   function buildBands(weeks) {
     const bands = [];
-    for (const monday of weeks) {
-      const isQ4 = monday >= parseDate("2026-09-28");
-      const label = isQ4
-        ? monday < Q4_START
-          ? "Start of Q4"
-          : `Q${quarterInfo(monday).q}`
-        : sprintForWeek(monday);
-      const last = bands[bands.length - 1];
-      if (last && last.label === label) last.span += 1;
-      else bands.push({ label, span: 1, q4: isQ4 });
+    for (let i = 0; i < weeks.length; i += 2) {
+      const span = Math.min(2, weeks.length - i);
+      const minor = FIRST_MINOR + i / 2;
+      bands.push({
+        label: `Release 1.${String(minor).padStart(2, "0")}`,
+        span,
+      });
     }
     return bands;
   }
@@ -166,6 +157,26 @@
   function pct(iso, range) {
     const date = parseDate(iso);
     return ((date - range.start) / range.ms) * 100;
+  }
+
+  function pctAfter(iso, range) {
+    return ((addDays(parseDate(iso), 1) - range.start) / range.ms) * 100;
+  }
+
+  function sprintEndPct(iso, range) {
+    return ((addDays(startOfWeek(parseDate(iso)), 7) - range.start) / range.ms) * 100;
+  }
+
+  function itemSpan(item) {
+    const dates = [
+      ...(item.bars || []).flatMap((bar) => [bar.start, bar.end]),
+      ...(item.milestones || []).map((mark) => mark.date),
+    ];
+    if (!dates.length) return { start: TIMELINE_START, end: TIMELINE_START };
+    return {
+      start: dates.reduce((min, date) => (date < min ? date : min)),
+      end: dates.reduce((max, date) => (date > max ? date : max)),
+    };
   }
 
   function today() {
@@ -183,6 +194,16 @@
 
   function designerById(id) {
     return state.designers.find((d) => d.id === id);
+  }
+
+  function assigneeName(item) {
+    return designerById(item.assigneeId)?.name || "Unassigned";
+  }
+
+  function visibleItems() {
+    if (!filterDesigner) return state.items;
+    if (filterDesigner === "unassigned") return state.items.filter((item) => !item.assigneeId);
+    return state.items.filter((item) => item.assigneeId === filterDesigner);
   }
 
   function avatarHtml(id, extraClass = "") {
@@ -203,57 +224,29 @@
     const now = today();
     const weekStart = startOfWeek(now);
     const sprint = sprintForWeek(weekStart);
-    const { q, year } = quarterInfo(now);
-    const untilQ4 = weeksUntil(now, Q4_START);
-    const quarterLine =
-      q === 4
-        ? `Q4 ${year}`
-        : `Q${q} ${year} · ${untilQ4} week${untilQ4 === 1 ? "" : "s"} to Q4`;
+    const active = visibleItems().filter((item) => overlapsToday(item, now)).length;
 
     els.nowCard.innerHTML = `
       <div class="now-stat">
-        <div class="k">Today</div>
-        <div class="v today">${monthDay(now)}</div>
-      </div>
-      <div class="now-stat">
-        <div class="k">Current week</div>
-        <div class="v">${formatWeekLabel(weekStart)}</div>
-      </div>
-      <div class="now-stat">
-        <div class="k">Sprint / release</div>
-        <div class="v">${sprint}</div>
-      </div>
-      <div class="now-stat">
-        <div class="k">Quarter</div>
-        <div class="v">${quarterLine}</div>
+        <div class="k">${escapeHtml(sprint)}</div>
+        <div class="v">${active} active this week</div>
       </div>
     `;
-
-    const inProgress = state.items.filter((item) => overlapsToday(item, now));
-    if (!inProgress.length) {
-      els.topbarMeta.innerHTML = `<span class="chip">No work overlapping this week</span>`;
-      return;
-    }
-    els.topbarMeta.innerHTML = inProgress
-      .map((item) => {
-        return `<button type="button" class="chip" data-focus="${item.id}">
-          ${avatarHtml(item.assigneeId)}
-          <span>${escapeHtml(item.title)}</span>
-        </button>`;
-      })
-      .join("");
   }
 
   function renderDesignerFilter() {
-    const allActive = !filterDesigner ? "active" : "";
+    const pill = (id, label, leading = "") => {
+      const active = filterDesigner === id ? "active" : "";
+      return `<button type="button" class="name-filter ${active}" data-filter="${id}">${leading}${escapeHtml(label)}</button>`;
+    };
     els.designerFilter.innerHTML =
-      `<button type="button" class="text-filter ${allActive}" data-filter="" title="All designers">All</button>` +
+      pill("", "Everyone") +
       state.designers
-        .map((person) => {
-          const active = filterDesigner === person.id ? "active" : "";
-          return `<button type="button" class="avatar filter ${active}" data-filter="${person.id}" style="background:${person.color}" title="${escapeHtml(person.name)}">${escapeHtml(person.initial)}</button>`;
-        })
-        .join("");
+        .map((person) =>
+          pill(person.id, person.name, `<i class="dot" style="background:${person.color}"></i>`)
+        )
+        .join("") +
+      pill("unassigned", "Unassigned");
   }
 
   function renderBoard() {
@@ -263,26 +256,14 @@
     const now = today();
     const currentMonday = startOfWeek(now);
     const currentIndex = weeks.findIndex((week) => formatIso(week) === formatIso(currentMonday));
-    const collapsed = state.collapsed || {};
-
-    const visibleItems = (sectionId) =>
-      state.items.filter((item) => {
-        if (item.section !== sectionId) return false;
-        if (filterDesigner && item.assigneeId !== filterDesigner) return false;
-        return true;
-      });
-
-    const totalRows =
-      2 +
-      SECTIONS.reduce((sum, section) => {
-        if (collapsed[section.id]) return sum + 1;
-        return sum + 1 + (visibleItems(section.id).length || 1);
-      }, 0);
+    const items = visibleItems();
 
     let col = 2;
     const sprintCells = bands
       .map((band) => {
-        const html = `<div class="sprint-head ${band.q4 ? "q4" : ""}" style="grid-column:${col} / span ${band.span}; grid-row:1">${escapeHtml(band.label)}</div>`;
+        const html = `<div class="sprint-head" style="grid-column:${col} / span ${band.span}; grid-row:1">
+          <strong>${escapeHtml(band.label)}</strong>
+        </div>`;
         col += band.span;
         return html;
       })
@@ -297,78 +278,49 @@
 
     let row = 3;
     let body = "";
-    for (const section of SECTIONS) {
-      const items = visibleItems(section.id);
-      const isCollapsed = Boolean(collapsed[section.id]);
-      const countLabel = `${items.length} item${items.length === 1 ? "" : "s"}`;
-      body += `<button type="button" class="section-head ${section.id}" data-toggle="${section.id}" aria-expanded="${isCollapsed ? "false" : "true"}" style="grid-column:1 / span ${weeks.length + 1}; grid-row:${row}">
-        <span class="chevron ${isCollapsed ? "" : "open"}" aria-hidden="true"></span>
-        <span class="section-head-title">${escapeHtml(section.label)}</span>
-        <span class="section-head-count">${countLabel}</span>
-      </button>`;
+    items.forEach((item) => {
+      const selected = item.id === selectedId ? "selected" : "";
+      const person = designerById(item.assigneeId);
+      const { start, end } = itemSpan(item);
+      const dot = person
+        ? `<i class="dot" style="background:${person.color}"></i>`
+        : `<i class="dot unassigned-dot"></i>`;
+      body += `<div class="item-label ${selected}" data-item="${item.id}" style="grid-column:1; grid-row:${row}">
+        <div class="item-copy">
+          <strong>${escapeHtml(item.title)}</strong>
+          <span class="item-meta">${dot}${escapeHtml(assigneeName(item))} · ${shortMonthDay(parseDate(start))} – ${shortMonthDay(parseDate(end))}</span>
+        </div>
+      </div>`;
+
+      const bars = (item.bars || [])
+        .map((bar) => {
+          const left = pct(bar.start, range);
+          const width = Math.max(pctAfter(bar.end, range) - left, 1.2);
+          return `<div class="bar ${bar.kind}" style="left:${left}%; width:${width}%" title="${escapeHtml(bar.label)} · ${shortMonthDay(parseDate(bar.start))} – ${shortMonthDay(parseDate(bar.end))}"></div>`;
+        })
+        .join("");
+
+      const marks = (item.milestones || [])
+        .map((mark) => {
+          const left = mark.kind === "release" ? sprintEndPct(mark.date, range) : pctAfter(mark.date, range);
+          const shape = mark.kind === "release" ? "release-mark" : "diamond";
+          const shift = mark.kind === "release" ? "release" : "handoff";
+          return `<div class="marker ${shift}" style="left:${left}%" title="${escapeHtml(mark.label)} · ${shortMonthDay(parseDate(mark.date))}">
+            <i class="${shape}"></i>
+          </div>`;
+        })
+        .join("");
+
+      body += `<div class="item-track ${selected}" data-item="${item.id}" style="grid-column:2 / span ${weeks.length}; grid-row:${row}">${bars}${marks}</div>`;
       row += 1;
-
-      if (isCollapsed) continue;
-
-      if (!items.length) {
-        body += `<div class="item-label" style="grid-column:1; grid-row:${row}"><div class="item-copy"><strong>No work in this section</strong><span>Use Add work to create an item</span></div></div>`;
-        body += `<div class="item-track" style="grid-column:2 / span ${weeks.length}; grid-row:${row}"></div>`;
-        row += 1;
-        continue;
-      }
-
-      items.forEach((item, index) => {
-        const selected = item.id === selectedId ? "selected" : "";
-        const tickets = item.tickets ? `<span>${escapeHtml(item.tickets)}</span>` : "";
-        body += `<div class="item-label ${selected}" data-item="${item.id}" style="grid-column:1; grid-row:${row}">
-          ${avatarHtml(item.assigneeId)}
-          <div class="item-copy">
-            <strong>${escapeHtml(item.title)}</strong>
-            ${tickets}
-          </div>
-        </div>`;
-
-        const bars = (item.bars || [])
-          .map((bar) => {
-            const left = pct(bar.start, range);
-            const width = Math.max(pct(bar.end, range) - left, 2);
-            return `<div class="bar ${bar.kind}" style="left:${left}%; width:${width}%" title="${escapeHtml(bar.label)}">${escapeHtml(bar.label)}</div>`;
-          })
-          .join("");
-
-        const marks = (item.milestones || [])
-          .map((mark) => {
-            const left = pct(mark.date, range);
-            const shape = mark.kind === "release" ? "star" : "diamond";
-            return `<div class="marker" style="left:${left}%" title="${escapeHtml(mark.label)}">
-              <i class="${shape}"></i>
-              <span class="marker-caption">${escapeHtml(mark.label)}</span>
-            </div>`;
-          })
-          .join("");
-
-        const stickies =
-          index === 0
-            ? (state.stickies || [])
-                .filter((note) => note.section === section.id)
-                .map((note) => {
-                  const left = pct(note.date, range);
-                  return `<div class="sticky-note" style="left:${left}%">${escapeHtml(note.label)}</div>`;
-                })
-                .join("")
-            : "";
-
-        body += `<div class="item-track ${selected}" data-item="${item.id}" style="grid-column:2 / span ${weeks.length}; grid-row:${row}">${bars}${marks}${stickies}</div>`;
-        row += 1;
-      });
-    }
+    });
 
     const todayCol =
       currentIndex >= 0
-        ? `<div class="today-col" style="grid-column:${currentIndex + 2}; grid-row:3 / span ${totalRows - 2}"></div>`
+        ? `<div class="today-col" style="grid-column:${currentIndex + 2}; grid-row:3 / span ${Math.max(items.length, 1)}"></div>`
         : "";
 
-    els.board.style.gridTemplateColumns = `${292}px repeat(${weeks.length}, ${WEEK_PX}px)`;
+    els.board.style.gridTemplateColumns = `${LABEL_W}px repeat(${weeks.length}, ${WEEK_PX}px)`;
     els.board.innerHTML = `
       <div class="corner" style="grid-column:1; grid-row:1 / span 2"></div>
       ${sprintCells}
@@ -613,24 +565,8 @@
   });
 
   els.board.addEventListener("click", (event) => {
-    const toggle = event.target.closest("[data-toggle]");
-    if (toggle) {
-      state.collapsed = state.collapsed || {};
-      const id = toggle.dataset.toggle;
-      state.collapsed[id] = !state.collapsed[id];
-      saveState();
-      render();
-      return;
-    }
     const row = event.target.closest("[data-item]");
     if (row) openDrawer(row.dataset.item);
-  });
-
-  els.topbarMeta.addEventListener("click", (event) => {
-    const chip = event.target.closest("[data-focus]");
-    if (!chip) return;
-    focusItem(chip.dataset.focus);
-    openDrawer(chip.dataset.focus);
   });
 
   els.designerFilter.addEventListener("click", (event) => {
